@@ -16,16 +16,20 @@ from pathlib import Path
 
 from llama_index.core import VectorStoreIndex
 from dataset import (
-    get_contexts_as_documents, get_queries,
     get_stress_contexts_as_documents, get_stress_queries,
     load_hotpotqa, get_hotpotqa_documents, get_hotpotqa_queries,
 )
-from main import build_rag_graph, RAGState, Settings
+from main import build_rag_graph, RAGState, Settings, THRESHOLD
 
 # ── Output directory ──────────────────────────────────────────────────────────
 OUT_DIR = Path("eval_results")
 OUT_DIR.mkdir(exist_ok=True)
 RUN_ID  = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+# ── Shared utility ────────────────────────────────────────────────────────────
+def avg(lst: list) -> float:
+    return round(sum(lst) / len(lst), 4) if lst else 0.0
 
 
 # ── ROUGE-L (lightweight, no extra deps) ─────────────────────────────────────
@@ -41,16 +45,35 @@ def rouge_l(hypothesis: str, reference: str) -> float:
     h, r = hypothesis.lower().split(), reference.lower().split()
     if not h or not r:
         return 0.0
-    lcs   = lcs_length(h, r)
-    prec  = lcs / len(h)
-    rec   = lcs / len(r)
+    lcs  = lcs_length(h, r)
+    prec = lcs / len(h)
+    rec  = lcs / len(r)
     return (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+
+
+# ── LaTeX escaping ────────────────────────────────────────────────────────────
+_LATEX_SPECIAL = str.maketrans({
+    '&':  r'\&',
+    '%':  r'\%',
+    '$':  r'\$',
+    '#':  r'\#',
+    '_':  r'\_',
+    '{':  r'\{',
+    '}':  r'\}',
+    '~':  r'\textasciitilde{}',
+    '^':  r'\textasciicircum{}',
+    '\\': r'\textbackslash{}',
+})
+
+def escape_latex(text: str) -> str:
+    return str(text).translate(_LATEX_SPECIAL)
 
 
 # ── Per-query evaluation ──────────────────────────────────────────────────────
 def evaluate_query(graph, qid: str, query: str, reference: str, risk: str) -> dict:
     initial: RAGState = {
         "query":          query,
+        "original_query": query,
         "retrieved_docs": [],
         "answer":         "",
         "h_score":        0.0,
@@ -58,15 +81,17 @@ def evaluate_query(graph, qid: str, query: str, reference: str, risk: str) -> di
         "claim_coverage": 0.0,
         "contradiction":  0.0,
         "retries":        0,
+        "best_answer":    None,
+        "best_h_score":   -1.0,
         "final_answer":   None,
     }
 
-    t0     = time.time()
-    result = graph.invoke(initial)
+    t0      = time.time()
+    result  = graph.invoke(initial)
     latency = round(time.time() - t0, 2)
 
-    answer  = result["final_answer"] or result["answer"]
-    rl      = rouge_l(answer, reference)
+    answer = result["final_answer"] or result["answer"]
+    rl     = rouge_l(answer, reference)
 
     return {
         "id":             qid,
@@ -75,23 +100,23 @@ def evaluate_query(graph, qid: str, query: str, reference: str, risk: str) -> di
         "answer":         answer,
         "reference":      reference,
         "h_score":        result["h_score"],
+        "best_h_score":   result["best_h_score"],
         "faithfulness":   result["faithfulness"],
         "claim_coverage": result["claim_coverage"],
         "contradiction":  result["contradiction"],
         "retries":        result["retries"],
         "rouge_l":        round(rl, 4),
         "latency_s":      latency,
-        "accepted":       result["h_score"] >= 0.65,
+        "accepted":       result["best_h_score"] >= THRESHOLD,
     }
 
 
 # ── Batch runner ──────────────────────────────────────────────────────────────
 def run_evaluation(mode: str = "stress", hotpotqa_n: int = 50):
     """
-    mode = "easy"     → original clean dataset
-    mode = "stress"   → adversarial stress-test dataset (recommended)
-    mode = "both"     → stress + easy combined
+    mode = "stress"   → adversarial stress-test dataset
     mode = "hotpotqa" → HotpotQA distractor split (real multi-hop QA)
+    mode = "both"     → stress + hotpotqa combined
 
     hotpotqa_n: number of HotpotQA samples to load (default 50)
     """
@@ -99,9 +124,7 @@ def run_evaluation(mode: str = "stress", hotpotqa_n: int = 50):
     print(f"  RAG Hallucination Evaluation — Run {RUN_ID}  [{mode}]")
     print(f"{'='*60}\n")
 
-    if mode == "easy":
-        docs, queries = get_contexts_as_documents(), get_queries()
-    elif mode == "stress":
+    if mode == "stress":
         docs, queries = get_stress_contexts_as_documents(), get_stress_queries()
     elif mode == "hotpotqa":
         samples = load_hotpotqa(split="validation", n_samples=hotpotqa_n)
@@ -109,31 +132,42 @@ def run_evaluation(mode: str = "stress", hotpotqa_n: int = 50):
         queries = get_hotpotqa_queries(samples)
         print(f"  Loaded {len(samples)} HotpotQA samples → {len(docs)} documents")
     else:  # both
-        docs    = get_contexts_as_documents() + get_stress_contexts_as_documents()
-        queries = get_queries() + get_stress_queries()
+        samples  = load_hotpotqa(split="validation", n_samples=hotpotqa_n)
+        docs     = get_stress_contexts_as_documents() + get_hotpotqa_documents(samples)
+        queries  = get_stress_queries() + get_hotpotqa_queries(samples)
+        print(f"  Loaded {len(get_stress_queries())} stress + {len(samples)} HotpotQA queries")
 
     index = VectorStoreIndex.from_documents(docs)
     graph = build_rag_graph(index)
-    rows    = []
+    rows  = []
 
-    for i, (qid, query, reference, risk) in enumerate(queries, 1):
-        print(f"[{i}/{len(queries)}] {qid} | risk={risk} | {query[:60]}...")
-        row = evaluate_query(graph, qid, query, reference, risk)
-        rows.append(row)
-        print(f"         H_score={row['h_score']} | ROUGE-L={row['rouge_l']} "
-              f"| retries={row['retries']} | latency={row['latency_s']}s\n")
-
-    export_csv(rows)
-    export_summary(rows)
-    export_latex(rows)
-    print(f"\n✅ Results saved to: {OUT_DIR}/")
+    try:
+        for i, (qid, query, reference, risk) in enumerate(queries, 1):
+            print(f"[{i}/{len(queries)}] {qid} | risk={risk} | {query[:60]}...")
+            try:
+                row = evaluate_query(graph, qid, query, reference, risk)
+                rows.append(row)
+                print(f"         H_score={row['h_score']} | ROUGE-L={row['rouge_l']} "
+                      f"| retries={row['retries']} | latency={row['latency_s']}s\n")
+            except Exception as e:
+                print(f"  ⚠ Query {qid} failed: {e}\n")
+    except KeyboardInterrupt:
+        print("\n⚠ Interrupted — saving partial results...")
+    finally:
+        if rows:
+            export_csv(rows)
+            export_summary(rows)
+            export_latex(rows)
+            print(f"\n✅ Results saved to: {OUT_DIR}/")
+        else:
+            print("No results to save.")
 
 
 # ── Export: CSV ───────────────────────────────────────────────────────────────
 def export_csv(rows: list):
     path = OUT_DIR / f"results_{RUN_ID}.csv"
     fields = [
-        "id", "risk", "h_score", "faithfulness", "claim_coverage",
+        "id", "risk", "h_score", "best_h_score", "faithfulness", "claim_coverage",
         "contradiction", "retries", "rouge_l", "latency_s", "accepted",
         "query", "answer", "reference",
     ]
@@ -146,8 +180,6 @@ def export_csv(rows: list):
 
 # ── Export: Summary JSON ──────────────────────────────────────────────────────
 def export_summary(rows: list):
-    def avg(lst): return round(sum(lst) / len(lst), 4) if lst else 0.0
-
     tiers   = sorted({r["risk"] for r in rows})
     summary = {"run_id": RUN_ID, "total": len(rows), "by_risk": {}}
 
@@ -156,23 +188,22 @@ def export_summary(rows: list):
         if not subset:
             continue
         summary["by_risk"][tier] = {
-            "count":          len(subset),
-            "avg_h_score":    avg([r["h_score"]    for r in subset]),
-            "avg_faithfulness": avg([r["faithfulness"] for r in subset]),
-            "avg_claim_cov":  avg([r["claim_coverage"] for r in subset]),
-            "avg_contradiction": avg([r["contradiction"] for r in subset]),
-            "avg_retries":    avg([r["retries"]     for r in subset]),
-            "avg_rouge_l":    avg([r["rouge_l"]     for r in subset]),
-            "acceptance_rate": round(sum(r["accepted"] for r in subset) / len(subset), 4),
+            "count":             len(subset),
+            "avg_h_score":       avg([r["h_score"]       for r in subset]),
+            "avg_faithfulness":  avg([r["faithfulness"]  for r in subset]),
+            "avg_claim_cov":     avg([r["claim_coverage"] for r in subset]),
+            "avg_contradiction": avg([r["contradiction"]  for r in subset]),
+            "avg_retries":       avg([r["retries"]        for r in subset]),
+            "avg_rouge_l":       avg([r["rouge_l"]        for r in subset]),
+            "acceptance_rate":   round(sum(r["accepted"] for r in subset) / len(subset), 4),
         }
 
-    # Overall
     summary["overall"] = {
-        "avg_h_score":     avg([r["h_score"]      for r in rows]),
-        "avg_rouge_l":     avg([r["rouge_l"]       for r in rows]),
-        "avg_retries":     avg([r["retries"]       for r in rows]),
+        "avg_h_score":     avg([r["h_score"]    for r in rows]),
+        "avg_rouge_l":     avg([r["rouge_l"]    for r in rows]),
+        "avg_retries":     avg([r["retries"]    for r in rows]),
         "acceptance_rate": round(sum(r["accepted"] for r in rows) / len(rows), 4),
-        "avg_latency_s":   avg([r["latency_s"]     for r in rows]),
+        "avg_latency_s":   avg([r["latency_s"]  for r in rows]),
     }
 
     path = OUT_DIR / f"summary_{RUN_ID}.json"
@@ -184,8 +215,6 @@ def export_summary(rows: list):
 
 # ── Export: LaTeX Table ───────────────────────────────────────────────────────
 def export_latex(rows: list):
-    def avg(lst): return round(sum(lst) / len(lst), 4) if lst else 0.0
-
     lines = [
         r"\begin{table}[h]",
         r"\centering",
@@ -198,27 +227,26 @@ def export_latex(rows: list):
         r"\hline",
     ]
 
-    for r in rows:
-        risk_abbr = r["risk"][0].upper()
+    for row in rows:
+        risk_abbr = escape_latex(row["risk"][0].upper())
         lines.append(
-            f"{r['id']} & {risk_abbr} & {r['h_score']} & {r['faithfulness']} "
-            f"& {r['claim_coverage']} & {r['contradiction']} "
-            f"& {r['rouge_l']} & {r['retries']} \\\\"
+            f"{escape_latex(row['id'])} & {risk_abbr} & {row['h_score']} & {row['faithfulness']} "
+            f"& {row['claim_coverage']} & {row['contradiction']} "
+            f"& {row['rouge_l']} & {row['retries']} \\\\"
         )
 
-    # Aggregate footer rows
     lines.append(r"\hline")
-    for tier in ["low", "medium", "high"]:
+    for tier in ["low", "medium", "high", "irrelevant", "conflicting", "missing", "noisy", "hotpotqa"]:
         subset = [r for r in rows if r["risk"] == tier]
         if subset:
             lines.append(
-                f"\\textbf{{Avg ({tier[0].upper()})}} & & "
-                f"{avg([r['h_score'] for r in subset])} & "
-                f"{avg([r['faithfulness'] for r in subset])} & "
+                f"\\textbf{{Avg ({escape_latex(tier)})}} & & "
+                f"{avg([r['h_score']       for r in subset])} & "
+                f"{avg([r['faithfulness']  for r in subset])} & "
                 f"{avg([r['claim_coverage'] for r in subset])} & "
                 f"{avg([r['contradiction'] for r in subset])} & "
-                f"{avg([r['rouge_l'] for r in subset])} & "
-                f"{avg([r['retries'] for r in subset])} \\\\"
+                f"{avg([r['rouge_l']       for r in subset])} & "
+                f"{avg([r['retries']       for r in subset])} \\\\"
             )
 
     lines += [
@@ -228,7 +256,7 @@ def export_latex(rows: list):
     ]
 
     path = OUT_DIR / f"paper_table_{RUN_ID}.tex"
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print(f"📝 LaTeX table saved: {path}")
 

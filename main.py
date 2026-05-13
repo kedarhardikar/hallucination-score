@@ -20,18 +20,17 @@ from llama_index.llms.groq import Groq
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from transformers import pipeline as hf_pipeline
 from dotenv import load_dotenv
-import os
 
-# Load variables from .env file
 load_dotenv()
-# Access variables
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-# ── Groq + Embedding config ───────────────────────────────────────────────────
-# GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "your_groq_api_key_here")
-GROQ_MODEL   = "llama-3.3-70b-versatile"   # or "mixtral-8x7b-32768", "llama3-70b-8192"
 
-# Use a local HuggingFace embedding model (no OpenAI needed)
-Settings.llm   = Groq(model=GROQ_MODEL, api_key=GROQ_API_KEY)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    raise EnvironmentError("GROQ_API_KEY not set. Add it to your .env file.")
+
+# ── Groq + Embedding config ───────────────────────────────────────────────────
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+Settings.llm         = Groq(model=GROQ_MODEL, api_key=GROQ_API_KEY)
 Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
 # ── H_score weights & thresholds ─────────────────────────────────────────────
@@ -41,16 +40,25 @@ GAMMA     = 0.2   # (1 - Contradiction) weight
 THRESHOLD = 0.65
 MAX_RETRIES = 3
 
-# ── NLI model (local, no API needed) ─────────────────────────────────────────
-nli = hf_pipeline(
-    "zero-shot-classification",
-    model="cross-encoder/nli-deberta-v3-small",
-    device=-1,   # set to 0 for GPU
-)
+# ── NLI model — lazy-loaded on first use ──────────────────────────────────────
+_nli_pipeline = None
+
+
+def _get_nli():
+    global _nli_pipeline
+    if _nli_pipeline is None:
+        _nli_pipeline = hf_pipeline(
+            "text-classification",
+            model="cross-encoder/nli-deberta-v3-small",
+            device=-1,   # set to 0 for GPU
+        )
+    return _nli_pipeline
+
 
 # ── Graph State ───────────────────────────────────────────────────────────────
 class RAGState(TypedDict):
     query:          str
+    original_query: str
     retrieved_docs: List[str]
     answer:         str
     h_score:        float
@@ -58,6 +66,8 @@ class RAGState(TypedDict):
     claim_coverage: float
     contradiction:  float
     retries:        int
+    best_answer:    Optional[str]
+    best_h_score:   float
     final_answer:   Optional[str]
 
 
@@ -67,13 +77,11 @@ def split_sentences(text: str) -> List[str]:
 
 
 def nli_score(premise: str, hypothesis: str) -> dict:
-    result = nli(
-        hypothesis,
-        candidate_labels=["entailment", "contradiction", "neutral"],
-        hypothesis_template="{}",
-        multi_label=False,
-    )
-    return dict(zip(result["labels"], result["scores"]))
+    """Run NLI inference on a premise/hypothesis pair using the cross-encoder."""
+    nli = _get_nli()
+    # return_all_scores gives a score for every label, not just the top one
+    results = nli({"text": premise, "text_pair": hypothesis}, top_k=None)
+    return {r["label"].lower(): r["score"] for r in results}
 
 
 def compute_h_score(answer: str, docs: List[str]) -> dict:
@@ -88,9 +96,12 @@ def compute_h_score(answer: str, docs: List[str]) -> dict:
                 "claim_coverage": 0.0, "contradiction": 0.0}
 
     entailment_scores, contradiction_scores, covered = [], [], 0
+    print(f"Context retrieved from db: {context}")
+    print(f"Sentences (answer from llm after splitting:) {sentences}")
 
     for sent in sentences:
         scores = nli_score(premise=context, hypothesis=sent)
+        print(f"scores after nli: {scores}")
         entailment_scores.append(scores.get("entailment", 0))
         contradiction_scores.append(scores.get("contradiction", 0))
         if scores.get("entailment", 0) > 0.5:
@@ -117,14 +128,18 @@ def retrieve_node(state: RAGState, index: VectorStoreIndex) -> RAGState:
     return state
 
 
-def generate_node(state: RAGState, index: VectorStoreIndex) -> RAGState:
-    """Generate answer via Groq (through LlamaIndex query engine)."""
-    query_engine = index.as_query_engine(
-        llm=Settings.llm,
-        similarity_top_k=5,
+def generate_node(state: RAGState) -> RAGState:
+    """Generate answer from the already-retrieved docs so H_score evaluates the same context."""
+    context = "\n\n".join(state["retrieved_docs"])
+    prompt = (
+        f"Answer the following question using only the provided context. "
+        f"If the context does not contain enough information, say so.\n\n"
+        f"Context:\n{context}\n\n"
+        f"Question: {state['query']}\n\n"
+        f"Answer:"
     )
-    response = query_engine.query(state["query"])
-    state["answer"] = str(response)
+    response = Settings.llm.complete(prompt)
+    state["answer"] = str(response).strip()
     return state
 
 
@@ -132,19 +147,21 @@ def hallucination_metric_node(state: RAGState) -> RAGState:
     metrics = compute_h_score(state["answer"], state["retrieved_docs"])
     state.update(metrics)
 
+    if state["h_score"] > state["best_h_score"]:
+        state["best_h_score"] = state["h_score"]
+        state["best_answer"]  = state["answer"]
+
     print(f"\n[H_score Node] Retry #{state['retries']}")
     print(f"  H_score      : {state['h_score']}")
     print(f"  Faithfulness : {state['faithfulness']}")
     print(f"  Claim Cov.   : {state['claim_coverage']}")
     print(f"  Contradiction: {state['contradiction']}")
+    print(f"  Best so far  : {state['best_h_score']}")
     return state
 
 
 def refine_query_node(state: RAGState) -> RAGState:
-    """
-    On low H_score: use Groq to generate a better query.
-    This itself is a paper contribution — LLM-guided query refinement.
-    """
+    """Use Groq to generate a better query when H_score is too low."""
     state["retries"] += 1
     prompt = (
         f"The following question was answered with low factual grounding:\n"
@@ -160,8 +177,8 @@ def refine_query_node(state: RAGState) -> RAGState:
 
 
 def finalize_node(state: RAGState) -> RAGState:
-    state["final_answer"] = state["answer"]
-    print(f"\n✅ Accepted. H_score = {state['h_score']}")
+    state["final_answer"] = state["best_answer"]
+    print(f"\n✅ Finalized. Best H_score = {state['best_h_score']}")
     return state
 
 
@@ -177,7 +194,7 @@ def build_rag_graph(index: VectorStoreIndex):
     g = StateGraph(RAGState)
 
     g.add_node("retrieve",             partial(retrieve_node, index=index))
-    g.add_node("generate",             partial(generate_node, index=index))
+    g.add_node("generate",             generate_node)
     g.add_node("hallucination_metric", hallucination_metric_node)
     g.add_node("refine",               refine_query_node)
     g.add_node("finalize",             finalize_node)
@@ -206,8 +223,10 @@ if __name__ == "__main__":
     index = VectorStoreIndex.from_documents(docs)
     graph = build_rag_graph(index)
 
+    query = "What are the main causes of hallucination in RAG systems?"
     initial: RAGState = {
-        "query":          "What are the main causes of hallucination in RAG systems?",
+        "query":          query,
+        "original_query": query,
         "retrieved_docs": [],
         "answer":         "",
         "h_score":        0.0,
@@ -215,6 +234,8 @@ if __name__ == "__main__":
         "claim_coverage": 0.0,
         "contradiction":  0.0,
         "retries":        0,
+        "best_answer":    None,
+        "best_h_score":   -1.0,
         "final_answer":   None,
     }
 

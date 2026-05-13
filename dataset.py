@@ -317,7 +317,7 @@ def get_hotpotqa_documents(samples: list):
         sentences = sample["context"]["sentences"]
         for title, sent_list in zip(titles, sentences):
             text = " ".join(sent_list).strip()
-            key  = (title, text[:80])
+            key  = (title, text)   # full text prevents false-positive dedup on shared prefixes
             if key in seen:
                 continue
             seen.add(key)

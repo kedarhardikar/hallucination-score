@@ -1,0 +1,31 @@
+id,risk,h_score,faithfulness,claim_coverage,contradiction,retries,rouge_l,latency_s,accepted,query,answer,reference
+s001,irrelevant,0.1762,0.0017,0.0,0.1227,3,0.5789,7.4,False,How does dense retrieval work in RAG?,Dense retrievers in RAG work by encoding queries and documents into vector embeddings and using approximate nearest neighbour search.,Dense retrieval encodes queries and documents into vector embeddings and uses approximate nearest neighbour search to find relevant passages.
+s002,irrelevant,0.1991,0.0212,0.0,0.0466,3,0.0578,8.85,False,What is the purpose of re-ranking in a RAG pipeline?,"The key components of the Retrieval-Augmented Generation (RAG) pipeline, as described in the provided context, include the retriever, which selects the most relevant documents from a large corpus given a user query. The RAG pipeline also involves the use of dense retrievers that encode queries and documents into vector embeddings and use approximate nearest neighbour search.
+
+The evaluation metrics of the RAG pipeline, as mentioned in the context, include four main metrics: 
+1. faithfulness, 
+2. answer relevancy, 
+3. context precision, and 
+4. context recall.
+
+These components and metrics relate to natural language processing (NLP) and information retrieval tasks, as the RAG pipeline is used to generate answers to user queries by retrieving relevant documents from a large corpus and using the information in those documents to inform the generated answer. However, the context does not provide detailed information on how these metrics are calculated or how they are used in specific NLP and information retrieval tasks.","Re-ranking reorders retrieved documents using a cross-encoder to surface the most relevant passages before generation, reducing hallucination."
+s003,conflicting,0.1556,0.0021,0.0,0.2263,3,0.1333,6.08,False,Was RAG introduced before or after GPT-3?,"The context contains conflicting information. Initially, it states that RAG was introduced by Lewis et al. in 2020, the same year GPT-3 was released. However, later it mentions that RAG was a successor to GPT-3, introduced in 2022. Therefore, the context does not contain enough consistent information to provide a clear answer.",RAG and GPT-3 were both introduced in 2020.
+s004,conflicting,0.1996,0.0039,0.0,0.01,3,0.2857,4.54,False,What does faithfulness measure in RAG evaluation?,"Faithfulness measures whether the generated answer is factually consistent with the retrieved context, and whether all its claims can be verified against the source documents, or alternatively, whether the answer matches the user's original intent and question.",Faithfulness measures factual consistency between the generated answer and the retrieved context.
+s005,conflicting,0.1946,0.0111,0.0,0.0491,3,0.2759,9.29,False,Can hallucination be completely eliminated in RAG systems?,Current research suggests that hallucination cannot be completely eliminated in RAG systems.,"Hallucination cannot be completely eliminated; retrieval grounding helps but context ignorance, retrieval errors, and model bias remain."
+s006,missing,0.1999,0.0012,0.0,0.0026,3,0.0274,18.91,False,What is Self-RAG and how does it differ from standard RAG?,"The provided context mentions the following specific features and limitations of RAG:
+
+Features: 
+1. RAG was designed to address hallucination problems.
+2. Retrieval grounding reduces hallucination in RAG.
+3. Modern RAG pipelines achieve near-zero hallucination rates by enforcing strict context attribution.
+
+Limitations: 
+1. Context ignorance
+2. Retrieval errors
+3. Model bias
+
+There are contradictions regarding RAG's ability to eliminate hallucination. The context states that ""Current research suggests hallucination cannot be completely eliminated in RAG"" and mentions issues that persist, such as context ignorance, retrieval errors, and model bias. However, it also states that ""Recent advances in grounding techniques have effectively eliminated hallucination in RAG systems"" and that modern RAG pipelines achieve near-zero hallucination rates. This contradiction suggests uncertainty about the current state of RAG's ability to eliminate hallucination.","Self-RAG retrieves on demand and critiques its own outputs using reflection tokens, unlike standard RAG which retrieves unconditionally."
+s007,missing,0.2216,0.0606,0.0,0.0132,3,0.058,19.47,False,What is CRAG and how does it handle low-quality retrievals?,"The context states that in RAG, smaller chunk sizes improve retrieval precision but may lose surrounding context, while larger chunk sizes preserve context but reduce retrieval relevance by adding noise. This indicates a trade-off between precision and context preservation, where smaller chunks prioritize precision and larger chunks prioritize context preservation.",CRAG (Corrective RAG) evaluates retrieval quality and falls back to web search when retrieved documents are deemed low quality.
+s008,noisy,0.1998,0.0004,0.0,0.0021,3,0.1961,18.57,False,What is the role of the retriever in a RAG pipeline?,"Dense retrievers in a RAG pipeline use approximate nearest neighbour search, encoding queries and documents into vector embeddings, to select relevant documents from a large corpus given a user query.",The retriever selects relevant documents from a corpus using dense or sparse methods. Dense retrievers use vector embeddings and ANN search.
+s009,noisy,0.2314,0.1218,0.0,0.0868,3,0.4789,20.42,False,What is chunk size and why does it matter in RAG?,"The role of chunk size in Retrieval-Augmented Generation (RAG) is to determine how documents are split before indexing. The chunk size has a trade-off impact on the model's output: smaller chunks improve retrieval precision but may lose surrounding context, while larger chunks preserve context but reduce retrieval relevance by adding noise.",Chunk size controls how documents are split before indexing. Smaller chunks improve precision; larger chunks preserve context but add noise.
+s010,noisy,0.1284,0.0004,0.0,0.3587,3,0.6897,18.9,False,What is intrinsic hallucination in RAG?,Intrinsic hallucination in RAG occurs when the generated output directly contradicts the source documents provided as context.,Intrinsic hallucination occurs when the generated output contradicts the retrieved source documents.
