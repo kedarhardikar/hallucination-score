@@ -1,0 +1,9 @@
+llama-index
+llama-index-llms-groq
+llama-index-embeddings-huggingface
+sentence-transformers
+pypdf
+python-dotenv
+transformers
+langgraph
+datasets
