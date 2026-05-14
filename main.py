@@ -87,29 +87,52 @@ def nli_score(premise: str, hypothesis: str) -> dict:
 def compute_h_score(answer: str, docs: List[str]) -> dict:
     """
     H_score = α·Faithfulness + β·ClaimCoverage + γ·(1 − ContradictionRate)
+
+    Per-sentence × per-passage NLI scoring:
+      For each answer sentence, run NLI against EACH retrieved passage
+      individually. Take the MAX entailment (best-supporting evidence)
+      and the MAX contradiction (strongest disagreement) across passages.
+      This avoids signal dilution from concatenating long, mostly-irrelevant
+      context into a single premise.
     """
-    context   = " ".join(docs)
     sentences = split_sentences(answer)
 
-    if not sentences:
+    if not sentences or not docs:
         return {"h_score": 0.0, "faithfulness": 0.0,
                 "claim_coverage": 0.0, "contradiction": 0.0}
 
-    entailment_scores, contradiction_scores, covered = [], [], 0
-    print(f"Context retrieved from db: {context}")
-    print(f"Sentences (answer from llm after splitting:) {sentences}")
+    per_sent_entailment    = []
+    per_sent_contradiction = []
+    covered = 0
 
-    for sent in sentences:
-        scores = nli_score(premise=context, hypothesis=sent)
-        print(f"scores after nli: {scores}")
-        entailment_scores.append(scores.get("entailment", 0))
-        contradiction_scores.append(scores.get("contradiction", 0))
-        if scores.get("entailment", 0) > 0.5:
+    print(f"[H_score] {len(sentences)} answer sentences × {len(docs)} passages")
+
+    for s_idx, sent in enumerate(sentences):
+        ent_per_passage  = []
+        con_per_passage  = []
+        for d_idx, passage in enumerate(docs):
+            scores = nli_score(premise=passage, hypothesis=sent)
+            ent_per_passage.append(scores.get("entailment", 0.0))
+            con_per_passage.append(scores.get("contradiction", 0.0))
+
+        # Best supporting passage for this sentence
+        best_entailment = max(ent_per_passage)
+        # Strongest contradicting passage for this sentence (intrinsic hallucination signal)
+        best_contradiction = max(con_per_passage)
+
+        per_sent_entailment.append(best_entailment)
+        per_sent_contradiction.append(best_contradiction)
+
+        if best_entailment > 0.5:
             covered += 1
 
-    faithfulness   = sum(entailment_scores) / len(entailment_scores)
-    claim_coverage = covered / len(sentences)
-    contradiction  = sum(contradiction_scores) / len(contradiction_scores)
+        print(f"  sent[{s_idx}] best_entail={best_entailment:.3f} "
+              f"best_contra={best_contradiction:.3f} -> "
+              f"{'covered' if best_entailment > 0.5 else 'uncovered'}")
+
+    faithfulness   = sum(per_sent_entailment)    / len(per_sent_entailment)
+    claim_coverage = covered                     / len(sentences)
+    contradiction  = sum(per_sent_contradiction) / len(per_sent_contradiction)
     h_score = ALPHA * faithfulness + BETA * claim_coverage + GAMMA * (1 - contradiction)
 
     return {
@@ -184,7 +207,7 @@ def finalize_node(state: RAGState) -> RAGState:
 
 # ── Conditional Edge ──────────────────────────────────────────────────────────
 def should_retry(state: RAGState) -> str:
-    if state["h_score"] >= THRESHOLD or state["retries"] >= MAX_RETRIES:
+    if state["best_h_score"] >= THRESHOLD or state["retries"] >= MAX_RETRIES:
         return "finalize"
     return "refine"
 
