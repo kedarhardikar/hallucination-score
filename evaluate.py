@@ -147,8 +147,9 @@ def run_evaluation(mode: str = "stress", hotpotqa_n: int = 50):
             try:
                 row = evaluate_query(graph, qid, query, reference, risk)
                 rows.append(row)
-                print(f"         H_score={row['h_score']} | ROUGE-L={row['rouge_l']} "
-                      f"| retries={row['retries']} | latency={row['latency_s']}s\n")
+                print(f"         best_H_score={row['best_h_score']} | last_H_score={row['h_score']} "
+                      f"| ROUGE-L={row['rouge_l']} | retries={row['retries']} "
+                      f"| latency={row['latency_s']}s\n")
             except Exception as e:
                 print(f"  ⚠ Query {qid} failed: {e}\n")
     except KeyboardInterrupt:
@@ -188,22 +189,24 @@ def export_summary(rows: list):
         if not subset:
             continue
         summary["by_risk"][tier] = {
-            "count":             len(subset),
-            "avg_h_score":       avg([r["h_score"]       for r in subset]),
-            "avg_faithfulness":  avg([r["faithfulness"]  for r in subset]),
-            "avg_claim_cov":     avg([r["claim_coverage"] for r in subset]),
-            "avg_contradiction": avg([r["contradiction"]  for r in subset]),
-            "avg_retries":       avg([r["retries"]        for r in subset]),
-            "avg_rouge_l":       avg([r["rouge_l"]        for r in subset]),
-            "acceptance_rate":   round(sum(r["accepted"] for r in subset) / len(subset), 4),
+            "count":              len(subset),
+            "avg_best_h_score":   avg([r["best_h_score"]  for r in subset]),
+            "avg_h_score":        avg([r["h_score"]       for r in subset]),
+            "avg_faithfulness":   avg([r["faithfulness"]  for r in subset]),
+            "avg_claim_cov":      avg([r["claim_coverage"] for r in subset]),
+            "avg_contradiction":  avg([r["contradiction"]  for r in subset]),
+            "avg_retries":        avg([r["retries"]        for r in subset]),
+            "avg_rouge_l":        avg([r["rouge_l"]        for r in subset]),
+            "acceptance_rate":    round(sum(r["accepted"] for r in subset) / len(subset), 4),
         }
 
     summary["overall"] = {
-        "avg_h_score":     avg([r["h_score"]    for r in rows]),
-        "avg_rouge_l":     avg([r["rouge_l"]    for r in rows]),
-        "avg_retries":     avg([r["retries"]    for r in rows]),
-        "acceptance_rate": round(sum(r["accepted"] for r in rows) / len(rows), 4),
-        "avg_latency_s":   avg([r["latency_s"]  for r in rows]),
+        "avg_best_h_score": avg([r["best_h_score"] for r in rows]),
+        "avg_h_score":      avg([r["h_score"]      for r in rows]),
+        "avg_rouge_l":      avg([r["rouge_l"]      for r in rows]),
+        "avg_retries":      avg([r["retries"]      for r in rows]),
+        "acceptance_rate":  round(sum(r["accepted"] for r in rows) / len(rows), 4),
+        "avg_latency_s":    avg([r["latency_s"]    for r in rows]),
     }
 
     path = OUT_DIR / f"summary_{RUN_ID}.json"
@@ -218,11 +221,11 @@ def export_latex(rows: list):
     lines = [
         r"\begin{table}[h]",
         r"\centering",
-        r"\caption{Per-query H\_score evaluation results. Risk tiers: L=Low, M=Medium, H=High.}",
+        r"\caption{Per-query H\_score evaluation results. Stress types: irrelevant, conflicting, missing, noisy. HotpotQA samples labelled as `hotpotqa'.}",
         r"\label{tab:hscore_results}",
         r"\begin{tabular}{llcccccc}",
         r"\hline",
-        r"\textbf{ID} & \textbf{Risk} & \textbf{H\_score} & \textbf{Faith.} "
+        r"\textbf{ID} & \textbf{Risk} & \textbf{Best H\_score} & \textbf{Faith.} "
         r"& \textbf{Cov.} & \textbf{Contr.} & \textbf{ROUGE-L} & \textbf{Retries} \\",
         r"\hline",
     ]
@@ -230,7 +233,7 @@ def export_latex(rows: list):
     for row in rows:
         risk_abbr = escape_latex(row["risk"][0].upper())
         lines.append(
-            f"{escape_latex(row['id'])} & {risk_abbr} & {row['h_score']} & {row['faithfulness']} "
+            f"{escape_latex(row['id'])} & {risk_abbr} & {row['best_h_score']} & {row['faithfulness']} "
             f"& {row['claim_coverage']} & {row['contradiction']} "
             f"& {row['rouge_l']} & {row['retries']} \\\\"
         )
@@ -241,12 +244,12 @@ def export_latex(rows: list):
         if subset:
             lines.append(
                 f"\\textbf{{Avg ({escape_latex(tier)})}} & & "
-                f"{avg([r['h_score']       for r in subset])} & "
-                f"{avg([r['faithfulness']  for r in subset])} & "
+                f"{avg([r['best_h_score']   for r in subset])} & "
+                f"{avg([r['faithfulness']   for r in subset])} & "
                 f"{avg([r['claim_coverage'] for r in subset])} & "
-                f"{avg([r['contradiction'] for r in subset])} & "
-                f"{avg([r['rouge_l']       for r in subset])} & "
-                f"{avg([r['retries']       for r in subset])} \\\\"
+                f"{avg([r['contradiction']  for r in subset])} & "
+                f"{avg([r['rouge_l']        for r in subset])} & "
+                f"{avg([r['retries']        for r in subset])} \\\\"
             )
 
     lines += [
