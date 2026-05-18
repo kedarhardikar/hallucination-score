@@ -1,6 +1,7 @@
 llama-index>=0.11.0
 llama-index-llms-groq>=0.2.0
 llama-index-embeddings-huggingface>=0.3.0
+llama-index-vector-stores-chroma>=0.2.0
 sentence-transformers>=3.0.0
 pypdf>=4.0.0
 python-dotenv>=1.0.0
@@ -8,3 +9,6 @@ transformers>=4.40.0
 torch>=2.2.0
 langgraph>=0.2.0
 datasets>=2.20.0
+chromadb>=0.5.0
+huggingface_hub[hf_xet]
+nltk>=3.8.0

@@ -14,12 +14,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from llama_index.core import VectorStoreIndex
 from dataset import (
     get_stress_contexts_as_documents, get_stress_queries,
     load_hotpotqa, get_hotpotqa_documents, get_hotpotqa_queries,
 )
 from main import build_rag_graph, RAGState, Settings, THRESHOLD
+from db import build_or_load_index, collection_exists, save_queries, load_queries, queries_cached
 
 # ── Output directory ──────────────────────────────────────────────────────────
 OUT_DIR = Path("eval_results")
@@ -71,19 +71,27 @@ def escape_latex(text: str) -> str:
 
 # ── Per-query evaluation ──────────────────────────────────────────────────────
 def evaluate_query(graph, qid: str, query: str, reference: str, risk: str) -> dict:
+    # Stress queries are filtered to their own source_id so each query only
+    # searches its own designated context set — prevents cross-contamination
+    # from other items' contexts bleeding into the retrieval results.
+    # HotpotQA queries search the full collection (multi-hop requires it).
+    is_stress = risk != "hotpotqa"
+
     initial: RAGState = {
         "query":          query,
         "original_query": query,
         "retrieved_docs": [],
         "answer":         "",
-        "h_score":        0.0,
-        "faithfulness":   0.0,
-        "claim_coverage": 0.0,
-        "contradiction":  0.0,
-        "retries":        0,
-        "best_answer":    None,
-        "best_h_score":   -1.0,
-        "final_answer":   None,
+        "h_score":          0.0,
+        "faithfulness":     0.0,
+        "claim_coverage":   0.0,
+        "contradiction":    0.0,
+        "answer_relevance": 0.0,
+        "retries":          0,
+        "best_answer":      None,
+        "best_h_score":     -1.0,
+        "final_answer":     None,
+        "filter_source_id": qid if is_stress else None,
     }
 
     t0      = time.time()
@@ -99,12 +107,13 @@ def evaluate_query(graph, qid: str, query: str, reference: str, risk: str) -> di
         "risk":           risk,
         "answer":         answer,
         "reference":      reference,
-        "h_score":        result["h_score"],
-        "best_h_score":   result["best_h_score"],
-        "faithfulness":   result["faithfulness"],
-        "claim_coverage": result["claim_coverage"],
-        "contradiction":  result["contradiction"],
-        "retries":        result["retries"],
+        "h_score":          result["h_score"],
+        "best_h_score":     result["best_h_score"],
+        "faithfulness":     result["faithfulness"],
+        "claim_coverage":   result["claim_coverage"],
+        "contradiction":    result["contradiction"],
+        "answer_relevance": result["answer_relevance"],
+        "retries":          result["retries"],
         "rouge_l":        round(rl, 4),
         "latency_s":      latency,
         "accepted":       result["best_h_score"] >= THRESHOLD,
@@ -112,7 +121,7 @@ def evaluate_query(graph, qid: str, query: str, reference: str, risk: str) -> di
 
 
 # ── Batch runner ──────────────────────────────────────────────────────────────
-def run_evaluation(mode: str = "stress", hotpotqa_n: int = 50):
+def run_evaluation(mode: str = "stress", hotpotqa_n: int = 50, no_refine: bool = False):
     """
     mode = "stress"   → adversarial stress-test dataset
     mode = "hotpotqa" → HotpotQA distractor split (real multi-hop QA)
@@ -125,20 +134,42 @@ def run_evaluation(mode: str = "stress", hotpotqa_n: int = 50):
     print(f"{'='*60}\n")
 
     if mode == "stress":
-        docs, queries = get_stress_contexts_as_documents(), get_stress_queries()
-    elif mode == "hotpotqa":
-        samples = load_hotpotqa(split="validation", n_samples=hotpotqa_n)
-        docs    = get_hotpotqa_documents(samples)
-        queries = get_hotpotqa_queries(samples)
-        print(f"  Loaded {len(samples)} HotpotQA samples → {len(docs)} documents")
-    else:  # both
-        samples  = load_hotpotqa(split="validation", n_samples=hotpotqa_n)
-        docs     = get_stress_contexts_as_documents() + get_hotpotqa_documents(samples)
-        queries  = get_stress_queries() + get_hotpotqa_queries(samples)
-        print(f"  Loaded {len(get_stress_queries())} stress + {len(samples)} HotpotQA queries")
+        # Stress queries come from static code — no caching needed
+        collection_name = "stress"
+        queries = get_stress_queries()
+        docs    = None if collection_exists(collection_name=collection_name) \
+                  else get_stress_contexts_as_documents()
 
-    index = VectorStoreIndex.from_documents(docs)
-    graph = build_rag_graph(index)
+    elif mode == "hotpotqa":
+        collection_name = "hotpotqa"
+        if collection_exists(collection_name=collection_name) and queries_cached(collection_name=collection_name):
+            print("  [DB] Using cached index + queries — skipping HotpotQA download")
+            docs    = None
+            queries = load_queries(collection_name=collection_name)
+        else:
+            samples = load_hotpotqa(split="validation", n_samples=hotpotqa_n)
+            docs    = get_hotpotqa_documents(samples)
+            queries = get_hotpotqa_queries(samples)
+            save_queries(queries, collection_name=collection_name)
+            print(f"  Loaded {len(samples)} HotpotQA samples → {len(docs)} documents")
+
+    else:  # both
+        collection_name = "both"
+        if collection_exists(collection_name=collection_name) and queries_cached(collection_name=collection_name):
+            print("  [DB] Using cached index + queries — skipping HotpotQA download")
+            docs    = None
+            queries = load_queries(collection_name=collection_name)
+        else:
+            samples = load_hotpotqa(split="validation", n_samples=hotpotqa_n)
+            docs    = get_stress_contexts_as_documents() + get_hotpotqa_documents(samples)
+            queries = get_stress_queries() + get_hotpotqa_queries(samples)
+            save_queries(queries, collection_name=collection_name)
+            print(f"  Loaded {len(get_stress_queries())} stress + {len(samples)} HotpotQA queries")
+
+    index = build_or_load_index(docs, collection_name=collection_name)
+    graph = build_rag_graph(index, no_refine=no_refine)
+    if no_refine:
+        print("  [Ablation] Query refinement DISABLED — single-pass only\n")
     rows  = []
 
     try:
@@ -169,8 +200,8 @@ def export_csv(rows: list):
     path = OUT_DIR / f"results_{RUN_ID}.csv"
     fields = [
         "id", "risk", "h_score", "best_h_score", "faithfulness", "claim_coverage",
-        "contradiction", "retries", "rouge_l", "latency_s", "accepted",
-        "query", "answer", "reference",
+        "contradiction", "answer_relevance", "retries", "rouge_l", "latency_s",
+        "accepted", "query", "answer", "reference",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
@@ -189,24 +220,26 @@ def export_summary(rows: list):
         if not subset:
             continue
         summary["by_risk"][tier] = {
-            "count":              len(subset),
-            "avg_best_h_score":   avg([r["best_h_score"]  for r in subset]),
-            "avg_h_score":        avg([r["h_score"]       for r in subset]),
-            "avg_faithfulness":   avg([r["faithfulness"]  for r in subset]),
-            "avg_claim_cov":      avg([r["claim_coverage"] for r in subset]),
-            "avg_contradiction":  avg([r["contradiction"]  for r in subset]),
-            "avg_retries":        avg([r["retries"]        for r in subset]),
-            "avg_rouge_l":        avg([r["rouge_l"]        for r in subset]),
-            "acceptance_rate":    round(sum(r["accepted"] for r in subset) / len(subset), 4),
+            "count":                 len(subset),
+            "avg_best_h_score":      avg([r["best_h_score"]     for r in subset]),
+            "avg_h_score":           avg([r["h_score"]          for r in subset]),
+            "avg_faithfulness":      avg([r["faithfulness"]     for r in subset]),
+            "avg_claim_cov":         avg([r["claim_coverage"]   for r in subset]),
+            "avg_contradiction":     avg([r["contradiction"]    for r in subset]),
+            "avg_answer_relevance":  avg([r["answer_relevance"] for r in subset]),
+            "avg_retries":           avg([r["retries"]          for r in subset]),
+            "avg_rouge_l":           avg([r["rouge_l"]          for r in subset]),
+            "acceptance_rate":       round(sum(r["accepted"] for r in subset) / len(subset), 4),
         }
 
     summary["overall"] = {
-        "avg_best_h_score": avg([r["best_h_score"] for r in rows]),
-        "avg_h_score":      avg([r["h_score"]      for r in rows]),
-        "avg_rouge_l":      avg([r["rouge_l"]      for r in rows]),
-        "avg_retries":      avg([r["retries"]      for r in rows]),
-        "acceptance_rate":  round(sum(r["accepted"] for r in rows) / len(rows), 4),
-        "avg_latency_s":    avg([r["latency_s"]    for r in rows]),
+        "avg_best_h_score":     avg([r["best_h_score"]     for r in rows]),
+        "avg_h_score":          avg([r["h_score"]          for r in rows]),
+        "avg_answer_relevance": avg([r["answer_relevance"] for r in rows]),
+        "avg_rouge_l":          avg([r["rouge_l"]          for r in rows]),
+        "avg_retries":          avg([r["retries"]          for r in rows]),
+        "acceptance_rate":      round(sum(r["accepted"] for r in rows) / len(rows), 4),
+        "avg_latency_s":        avg([r["latency_s"]        for r in rows]),
     }
 
     path = OUT_DIR / f"summary_{RUN_ID}.json"
@@ -223,10 +256,10 @@ def export_latex(rows: list):
         r"\centering",
         r"\caption{Per-query H\_score evaluation results. Stress types: irrelevant, conflicting, missing, noisy. HotpotQA samples labelled as `hotpotqa'.}",
         r"\label{tab:hscore_results}",
-        r"\begin{tabular}{llcccccc}",
+        r"\begin{tabular}{llccccccc}",
         r"\hline",
         r"\textbf{ID} & \textbf{Risk} & \textbf{Best H\_score} & \textbf{Faith.} "
-        r"& \textbf{Cov.} & \textbf{Contr.} & \textbf{ROUGE-L} & \textbf{Retries} \\",
+        r"& \textbf{Cov.} & \textbf{Contr.} & \textbf{Ans.Rel.} & \textbf{ROUGE-L} & \textbf{Retries} \\",
         r"\hline",
     ]
 
@@ -234,7 +267,7 @@ def export_latex(rows: list):
         risk_abbr = escape_latex(row["risk"][0].upper())
         lines.append(
             f"{escape_latex(row['id'])} & {risk_abbr} & {row['best_h_score']} & {row['faithfulness']} "
-            f"& {row['claim_coverage']} & {row['contradiction']} "
+            f"& {row['claim_coverage']} & {row['contradiction']} & {row['answer_relevance']} "
             f"& {row['rouge_l']} & {row['retries']} \\\\"
         )
 
@@ -244,12 +277,13 @@ def export_latex(rows: list):
         if subset:
             lines.append(
                 f"\\textbf{{Avg ({escape_latex(tier)})}} & & "
-                f"{avg([r['best_h_score']   for r in subset])} & "
-                f"{avg([r['faithfulness']   for r in subset])} & "
-                f"{avg([r['claim_coverage'] for r in subset])} & "
-                f"{avg([r['contradiction']  for r in subset])} & "
-                f"{avg([r['rouge_l']        for r in subset])} & "
-                f"{avg([r['retries']        for r in subset])} \\\\"
+                f"{avg([r['best_h_score']     for r in subset])} & "
+                f"{avg([r['faithfulness']     for r in subset])} & "
+                f"{avg([r['claim_coverage']   for r in subset])} & "
+                f"{avg([r['contradiction']    for r in subset])} & "
+                f"{avg([r['answer_relevance'] for r in subset])} & "
+                f"{avg([r['rouge_l']          for r in subset])} & "
+                f"{avg([r['retries']          for r in subset])} \\\\"
             )
 
     lines += [
@@ -267,5 +301,6 @@ def export_latex(rows: list):
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
-    mode = sys.argv[1] if len(sys.argv) > 1 else "stress"
-    run_evaluation(mode=mode)
+    mode     = sys.argv[1] if len(sys.argv) > 1 else "stress"
+    no_refine = "--no-refine" in sys.argv
+    run_evaluation(mode=mode, no_refine=no_refine)
