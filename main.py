@@ -11,8 +11,9 @@ Dependencies:
 
 import os
 import math
+import logging
 from typing import TypedDict, List, Optional
-from functools import partial
+from functools import partial, lru_cache
 
 import nltk
 from langgraph.graph import StateGraph, END
@@ -28,12 +29,19 @@ nltk.download("punkt_tab", quiet=True)
 
 load_dotenv()
 
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise EnvironmentError("GROQ_API_KEY not set. Add it to your .env file.")
 
+NLI_DEVICE = int(os.getenv("NLI_DEVICE", -1))   # set NLI_DEVICE=0 for GPU
+
 # ── Groq + Embedding config ───────────────────────────────────────────────────
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL  = "llama-3.3-70b-versatile"
+NLI_MODEL   = "cross-encoder/nli-deberta-v3-small"
+EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
 Settings.llm         = Groq(model=GROQ_MODEL, api_key=GROQ_API_KEY)
 Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
@@ -56,8 +64,8 @@ def _get_nli():
     if _nli_pipeline is None:
         _nli_pipeline = hf_pipeline(
             "text-classification",
-            model="cross-encoder/nli-deberta-v3-small",
-            device=-1,   # set to 0 for GPU
+            model=NLI_MODEL,
+            device=NLI_DEVICE,
         )
     return _nli_pipeline
 
@@ -78,6 +86,7 @@ class RAGState(TypedDict):
     best_h_score:     float
     final_answer:     Optional[str]
     filter_source_id: Optional[str]   # if set, retrieval is restricted to this source_id
+    drift_rejected:   bool            # True if the drift guard fired on any refinement attempt
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -115,6 +124,7 @@ def compute_answer_relevance(original_query: str, answer: str) -> float:
     return _cosine_sim(original_query, answer)
 
 
+@lru_cache(maxsize=2048)
 def nli_score(premise: str, hypothesis: str) -> dict:
     """Run NLI inference on a premise/hypothesis pair using the cross-encoder."""
     nli     = _get_nli()
@@ -138,6 +148,11 @@ def compute_h_score(answer: str, docs: List[str]) -> dict:
       Contradiction = fraction of sentences where the best-matching passage
                       ALSO contradicts them (intrinsic hallucination signal)
 
+    In hallucination_metric_node the Faithfulness term is further multiplied by
+    ClaimCoverage before weighting (effective_faithfulness = faithfulness × claim_coverage)
+    so that strength and breadth are coupled — high entailment on a single sentence
+    cannot carry the composite score when most sentences are unsupported.
+
     Key design: contradiction uses the SAME best-matching passage, not the worst
     passage across all. Prevents false positives from irrelevant noisy passages.
     """
@@ -150,7 +165,7 @@ def compute_h_score(answer: str, docs: List[str]) -> dict:
     covered      = 0
     contradicted = 0
 
-    print(f"[H_score] {len(sentences)} answer sentences × {len(docs)} passages")
+    logger.debug("[H_score] %d answer sentences × %d passages", len(sentences), len(docs))
 
     for s_idx, sent in enumerate(sentences):
         ent_per_passage = []
@@ -174,10 +189,12 @@ def compute_h_score(answer: str, docs: List[str]) -> dict:
         if is_contradicted:
             contradicted += 1
 
-        print(f"  sent[{s_idx}] best_entail={best_entailment:.3f} "
-              f"contra_from_best={best_contradiction:.3f} -> "
-              f"{'covered' if is_covered else 'uncovered'}"
-              f"{' + CONTRADICTED' if is_contradicted else ''}")
+        logger.debug(
+            "  sent[%d] best_entail=%.3f contra_from_best=%.3f -> %s%s",
+            s_idx, best_entailment, best_contradiction,
+            "covered" if is_covered else "uncovered",
+            " + CONTRADICTED" if is_contradicted else "",
+        )
 
     faithfulness   = (
         sum(covered_entailment_scores) / len(covered_entailment_scores)
@@ -243,8 +260,12 @@ def hallucination_metric_node(state: RAGState) -> RAGState:
     answer_relevance = compute_answer_relevance(state["original_query"], state["answer"])
 
     # Step 3: Assemble full H_score
+    # Faithfulness is multiplied by ClaimCoverage so grounding STRENGTH and
+    # BREADTH are coupled — a single well-grounded sentence cannot inflate
+    # the score when most sentences are unsupported.
+    effective_faithfulness = nli_metrics["faithfulness"] * nli_metrics["claim_coverage"]
     h_score = (
-        ALPHA * nli_metrics["faithfulness"] +
+        ALPHA * effective_faithfulness +
         BETA  * nli_metrics["claim_coverage"] +
         GAMMA * (1 - nli_metrics["contradiction"]) +
         DELTA * answer_relevance
@@ -260,13 +281,12 @@ def hallucination_metric_node(state: RAGState) -> RAGState:
         state["best_h_score"] = state["h_score"]
         state["best_answer"]  = state["answer"]
 
-    print(f"\n[H_score Node] Retry #{state['retries']}")
-    print(f"  H_score          : {state['h_score']}")
-    print(f"  Faithfulness     : {state['faithfulness']}")
-    print(f"  Claim Cov.       : {state['claim_coverage']}")
-    print(f"  Contradiction    : {state['contradiction']}")
-    print(f"  Answer Relevance : {state['answer_relevance']}")
-    print(f"  Best so far      : {state['best_h_score']}")
+    logger.info(
+        "[H_score Node] retry=%d  H=%.4f  faith=%.4f  cov=%.4f  contra=%.4f  rel=%.4f  best=%.4f",
+        state["retries"], state["h_score"], state["faithfulness"],
+        state["claim_coverage"], state["contradiction"],
+        state["answer_relevance"], state["best_h_score"],
+    )
     return state
 
 
@@ -300,23 +320,26 @@ def refine_query_node(state: RAGState) -> RAGState:
     # Drift guard: reject if refined query has strayed too far from original
     drift_sim = _cosine_sim(state["original_query"], refined_query)
     if drift_sim < DRIFT_CUTOFF:
-        print(f"\n[Refine Node] ⚠ Drift detected (sim={drift_sim:.3f} < {DRIFT_CUTOFF}) "
-              f"— rejecting refinement, forcing finalize")
-        state["retries"] = MAX_RETRIES   # triggers finalize on next should_retry check
+        logger.warning("[Refine Node] drift detected (sim=%.3f < %.2f) — rejecting, forcing finalize",
+                       drift_sim, DRIFT_CUTOFF)
+        state["retries"]       = MAX_RETRIES   # triggers finalize on next should_retry check
+        state["drift_rejected"] = True
     else:
         state["query"] = refined_query
-        print(f"\n[Refine Node] Accepted (sim={drift_sim:.3f}): {state['query']}")
+        logger.info("[Refine Node] accepted (sim=%.3f): %s", drift_sim, state["query"])
 
     return state
 
 
 def finalize_node(state: RAGState) -> RAGState:
     state["final_answer"] = state["best_answer"]
-    print(f"\n✅ Finalized. Best H_score = {state['best_h_score']}")
+    logger.info("Finalized. best_H_score=%.4f", state["best_h_score"])
     return state
 
 
 # ── Conditional Edge ──────────────────────────────────────────────────────────
+# If best_h_score >= THRESHOLD on the first pass, the pipeline finalizes without
+# refining. This is intentional — a confident first-pass answer should not be perturbed.
 def should_retry(state: RAGState) -> str:
     if state["best_h_score"] >= THRESHOLD or state["retries"] >= MAX_RETRIES:
         return "finalize"
@@ -381,8 +404,8 @@ if __name__ == "__main__":
         "best_h_score":     -1.0,
         "final_answer":     None,
         "filter_source_id": None,   # None = search full collection
+        "drift_rejected":   False,
     }
 
     result = graph.invoke(initial)
-    print("\n── Final Answer ──────────────────────────────────")
-    print(result["final_answer"])
+    logger.info("\n── Final Answer ──────────────────────────────────\n%s", result["final_answer"])

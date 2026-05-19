@@ -294,14 +294,15 @@ def get_stress_queries():
 
 # ── HotpotQA helpers ──────────────────────────────────────────────────────────
 
-def load_hotpotqa(split: str = "validation", n_samples: int = 50):
+def load_hotpotqa(split: str = "validation", n_samples: int = 50, seed: int = 42):
     """
     Loads HotpotQA distractor split from HuggingFace datasets.
+    Shuffles with seed before selecting so the same seed always yields the same samples.
     Returns a list of raw samples (dicts with question, answer, context, id).
     """
     from datasets import load_dataset
     ds = load_dataset("hotpot_qa", "distractor", split=split)
-    return list(ds.select(range(n_samples)))
+    return list(ds.shuffle(seed=seed).select(range(n_samples)))
 
 
 def get_hotpotqa_documents(samples: list):

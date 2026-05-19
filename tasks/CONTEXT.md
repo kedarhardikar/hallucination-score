@@ -9,11 +9,15 @@ A RAG pipeline that scores its own outputs for hallucination using a novel compo
 ## H_score formula
 
 ```
-H_score = 0.30 · Faithfulness        (avg entailment of covered sentences)
-        + 0.30 · ClaimCoverage       (fraction of sentences grounded)
-        + 0.15 · (1 − Contradiction) (fraction of sentences contradicted by best-matching passage)
-        + 0.25 · AnswerRelevance     (cosine sim between original query and answer)
+H_score = 0.30 · (Faithfulness × ClaimCoverage)   (strength × breadth, coupled)
+        + 0.30 · ClaimCoverage                     (fraction of sentences grounded)
+        + 0.15 · (1 − Contradiction)               (fraction of sentences contradicted by best-matching passage)
+        + 0.25 · AnswerRelevance                   (cosine sim between original query and answer)
 ```
+
+Faithfulness (avg entailment of covered sentences) is multiplied by ClaimCoverage
+before weighting so that grounding strength and breadth are inseparable — a single
+well-grounded sentence cannot inflate the score when most sentences are unsupported.
 
 NLI: `cross-encoder/nli-deberta-v3-small`
 Embeddings: `BAAI/bge-small-en-v1.5`
