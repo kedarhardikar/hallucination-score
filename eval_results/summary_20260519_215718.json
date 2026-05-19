@@ -1,0 +1,27 @@
+{
+  "run_id": "20260519_215718",
+  "total": 30,
+  "by_risk": {
+    "hotpotqa": {
+      "count": 30,
+      "avg_best_h_score": 0.6175,
+      "avg_h_score": 0.5853,
+      "avg_faithfulness": 0.5494,
+      "avg_claim_cov": 0.4833,
+      "avg_contradiction": 0.1417,
+      "avg_answer_relevance": 0.7076,
+      "avg_retries": 2.0333,
+      "avg_rouge_l": 0.1591,
+      "acceptance_rate": 0.4333
+    }
+  },
+  "overall": {
+    "avg_best_h_score": 0.6175,
+    "avg_h_score": 0.5853,
+    "avg_answer_relevance": 0.7076,
+    "avg_rouge_l": 0.1591,
+    "avg_retries": 2.0333,
+    "acceptance_rate": 0.4333,
+    "avg_latency_s": 13.803
+  }
+}

@@ -125,6 +125,7 @@ def evaluate_query(graph, qid: str, query: str, reference: str, risk: str) -> di
 
     answer = result["final_answer"] or result["answer"]
     rl     = rouge_l(answer, reference)
+    docs_concat = "\n---\n".join(result["retrieved_docs"])
 
     return {
         "id":             qid,
@@ -140,9 +141,10 @@ def evaluate_query(graph, qid: str, query: str, reference: str, risk: str) -> di
         "answer_relevance": result["answer_relevance"],
         "retries":          result["retries"],
         "drift_rejected":   result["drift_rejected"],
-        "rouge_l":        round(rl, 4),
-        "latency_s":      latency,
-        "accepted":       result["best_h_score"] >= THRESHOLD,
+        "rouge_l":          round(rl, 4),
+        "latency_s":        latency,
+        "accepted":         result["best_h_score"] >= THRESHOLD,
+        "retrieved_docs_concat": docs_concat,
     }
 
 
@@ -228,7 +230,7 @@ def export_csv(rows: list):
     fields = [
         "id", "risk", "h_score", "best_h_score", "faithfulness", "claim_coverage",
         "contradiction", "answer_relevance", "retries", "drift_rejected", "rouge_l",
-        "latency_s", "accepted", "query", "answer", "reference",
+        "latency_s", "accepted", "query", "answer", "reference", "retrieved_docs_concat",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)

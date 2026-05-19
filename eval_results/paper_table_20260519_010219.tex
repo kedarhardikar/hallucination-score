@@ -1,0 +1,26 @@
+\begin{table}[h]
+\centering
+\caption{Per-query H\_score evaluation results. Stress types: irrelevant, conflicting, missing, noisy. HotpotQA samples labelled as `hotpotqa'.}
+\label{tab:hscore_results}
+\begin{tabular}{llccccccc}
+\hline
+\textbf{ID} & \textbf{Risk} & \textbf{Best H\_score} & \textbf{Faith.} & \textbf{Cov.} & \textbf{Contr.} & \textbf{Ans.Rel.} & \textbf{ROUGE-L} & \textbf{Retries} \\
+\hline
+s001 & I & 0.3633 & 0.0 & 0.0 & 0.0 & 0.8363 & 0.0882 & 3 \\
+s002 & I & 0.3075 & 0.0 & 0.0 & 0.5 & 0.6906 & 0.1053 & 3 \\
+s003 & C & 0.8226 & 0.9916 & 0.5 & 0.0 & 0.9005 & 0.3256 & 0 \\
+s004 & C & 0.9168 & 0.9392 & 1.0 & 0.0 & 0.74 & 0.3889 & 0 \\
+s005 & C & 0.38 & 0.0 & 0.0 & 0.0 & 0.9199 & 0.0698 & 3 \\
+s006 & M & 0.3453 & 0.0 & 0.0 & 1.0 & 0.8397 & 0.1538 & 3 \\
+s007 & M & 0.3592 & 0.0 & 0.0 & 0.5 & 0.8009 & 0.0968 & 3 \\
+s008 & N & 0.9648 & 0.9926 & 1.0 & 0.0 & 0.868 & 0.3111 & 0 \\
+s009 & N & 0.8152 & 0.9702 & 0.5 & 0.0 & 0.8965 & 0.5714 & 0 \\
+s010 & N & 0.9308 & 0.974 & 1.0 & 0.0 & 0.7544 & 0.7407 & 1 \\
+\hline
+\textbf{Avg (irrelevant)} & & 0.3354 & 0.0 & 0.0 & 0.25 & 0.7634 & 0.0968 & 3.0 \\
+\textbf{Avg (conflicting)} & & 0.7065 & 0.6436 & 0.5 & 0.0 & 0.8535 & 0.2614 & 1.0 \\
+\textbf{Avg (missing)} & & 0.3523 & 0.0 & 0.0 & 0.75 & 0.8203 & 0.1253 & 3.0 \\
+\textbf{Avg (noisy)} & & 0.9036 & 0.9789 & 0.8333 & 0.0 & 0.8396 & 0.5411 & 0.3333 \\
+\hline
+\end{tabular}
+\end{table}

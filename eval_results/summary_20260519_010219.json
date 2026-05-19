@@ -1,0 +1,63 @@
+{
+  "run_id": "20260519_010219",
+  "total": 10,
+  "by_risk": {
+    "conflicting": {
+      "count": 3,
+      "avg_best_h_score": 0.7065,
+      "avg_h_score": 0.7065,
+      "avg_faithfulness": 0.6436,
+      "avg_claim_cov": 0.5,
+      "avg_contradiction": 0.0,
+      "avg_answer_relevance": 0.8535,
+      "avg_retries": 1.0,
+      "avg_rouge_l": 0.2614,
+      "acceptance_rate": 0.6667
+    },
+    "irrelevant": {
+      "count": 2,
+      "avg_best_h_score": 0.3354,
+      "avg_h_score": 0.3034,
+      "avg_faithfulness": 0.0,
+      "avg_claim_cov": 0.0,
+      "avg_contradiction": 0.25,
+      "avg_answer_relevance": 0.7634,
+      "avg_retries": 3.0,
+      "avg_rouge_l": 0.0968,
+      "acceptance_rate": 0.0
+    },
+    "missing": {
+      "count": 2,
+      "avg_best_h_score": 0.3523,
+      "avg_h_score": 0.2425,
+      "avg_faithfulness": 0.0,
+      "avg_claim_cov": 0.0,
+      "avg_contradiction": 0.75,
+      "avg_answer_relevance": 0.8203,
+      "avg_retries": 3.0,
+      "avg_rouge_l": 0.1253,
+      "acceptance_rate": 0.0
+    },
+    "noisy": {
+      "count": 3,
+      "avg_best_h_score": 0.9036,
+      "avg_h_score": 0.9036,
+      "avg_faithfulness": 0.9789,
+      "avg_claim_cov": 0.8333,
+      "avg_contradiction": 0.0,
+      "avg_answer_relevance": 0.8396,
+      "avg_retries": 0.3333,
+      "avg_rouge_l": 0.5411,
+      "acceptance_rate": 1.0
+    }
+  },
+  "overall": {
+    "avg_best_h_score": 0.6205,
+    "avg_h_score": 0.5922,
+    "avg_answer_relevance": 0.8247,
+    "avg_rouge_l": 0.2852,
+    "avg_retries": 1.6,
+    "acceptance_rate": 0.5,
+    "avg_latency_s": 5.835
+  }
+}
