@@ -1,4 +1,4 @@
-.PHONY: install eval-stress eval-hotpot eval-hotpot-large ablation reset-db clean
+.PHONY: install eval-stress eval-hotpot eval-hotpot-large ablation reset-db clean test
 
 install:
 	pip install -r req-pinned.txt && python -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab')"
@@ -20,3 +20,6 @@ reset-db:
 
 clean:
 	rm -rf eval_results/ ablation_results/
+
+test:
+	pytest tests/ -v

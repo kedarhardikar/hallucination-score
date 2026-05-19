@@ -12,3 +12,4 @@ datasets>=2.20.0
 chromadb>=0.5.0
 huggingface_hub[hf_xet]
 nltk>=3.8.0
+pytest>=8.0.0
