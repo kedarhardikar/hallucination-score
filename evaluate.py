@@ -197,46 +197,50 @@ def run_evaluation(mode: str = "stress", hotpotqa_n: int = 50,
     graph = build_rag_graph(index, no_refine=no_refine)
     if no_refine:
         logger.info("[Ablation] Query refinement DISABLED — single-pass only")
-    rows  = []
 
-    try:
-        for i, (qid, query, reference, risk) in enumerate(queries, 1):
-            logger.info("[%d/%d] %s | risk=%s | %s...", i, len(queries), qid, risk, query[:60])
-            try:
-                row = evaluate_query(graph, qid, query, reference, risk)
-                rows.append(row)
-                logger.info("        best_H=%.4f  last_H=%.4f  ROUGE-L=%.4f  "
-                            "retries=%d  drift_rej=%s  latency=%.1fs",
-                            row["best_h_score"], row["h_score"], row["rouge_l"],
-                            row["retries"], row["drift_rejected"], row["latency_s"])
-            except Exception as e:
-                logger.warning("Query %s failed: %s", qid, e)
-    except KeyboardInterrupt:
-        logger.warning("Interrupted — saving partial results...")
-    finally:
-        if rows:
-            export_csv(rows)
-            export_summary(rows)
-            export_latex(rows)
-            export_config(mode=mode, n_samples=hotpotqa_n, no_refine=no_refine, seed=seed)
-            logger.info("Results saved to: %s/", OUT_DIR)
-        else:
-            logger.warning("No results to save.")
-
-
-# ── Export: CSV ───────────────────────────────────────────────────────────────
-def export_csv(rows: list):
-    path = OUT_DIR / f"results_{RUN_ID}.csv"
+    # ── CSV opened immediately — each row flushed to disk as it completes ─────
+    # This means a hard kill / rate-limit interrupt never loses completed rows.
+    csv_path = OUT_DIR / f"results_{RUN_ID}.csv"
     fields = [
         "id", "risk", "h_score", "best_h_score", "faithfulness", "claim_coverage",
         "contradiction", "answer_relevance", "retries", "drift_rejected", "rouge_l",
         "latency_s", "accepted", "query", "answer", "reference", "retrieved_docs_concat",
     ]
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        w.writerows(rows)
-    logger.info("CSV saved: %s", path)
+    rows = []
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fields)
+        writer.writeheader()
+        csv_file.flush()
+
+        try:
+            for i, (qid, query, reference, risk) in enumerate(queries, 1):
+                logger.info("[%d/%d] %s | risk=%s | %s...", i, len(queries), qid, risk, query[:60])
+                try:
+                    row = evaluate_query(graph, qid, query, reference, risk)
+                    rows.append(row)
+                    writer.writerow(row)
+                    csv_file.flush()   # hit disk immediately — safe against any interrupt
+                    logger.info("        best_H=%.4f  last_H=%.4f  ROUGE-L=%.4f  "
+                                "retries=%d  drift_rej=%s  latency=%.1fs",
+                                row["best_h_score"], row["h_score"], row["rouge_l"],
+                                row["retries"], row["drift_rejected"], row["latency_s"])
+                except Exception as e:
+                    logger.warning("Query %s failed: %s", qid, e)
+        except KeyboardInterrupt:
+            logger.warning("Interrupted — %d rows already saved to %s", len(rows), csv_path)
+
+    logger.info("CSV saved: %s  (%d rows)", csv_path, len(rows))
+
+    if rows:
+        export_summary(rows)
+        export_latex(rows)
+        export_config(mode=mode, n_samples=hotpotqa_n, no_refine=no_refine, seed=seed)
+        logger.info("Results saved to: %s/", OUT_DIR)
+    else:
+        logger.warning("No results to save.")
+
+
 
 
 # ── Export: Summary JSON ──────────────────────────────────────────────────────
