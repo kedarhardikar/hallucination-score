@@ -138,28 +138,39 @@ def compute_h_score(answer: str, docs: List[str]) -> dict:
     The final H_score is assembled in hallucination_metric_node after adding
     the answer_relevance (DELTA) component.
 
-    Per-sentence × per-passage NLI scoring:
-      For each answer sentence, find the BEST-MATCHING passage (max entailment).
+    Per-sentence NLI scoring — split premise strategy:
 
-      Faithfulness  = avg entailment of COVERED sentences only
-                      (grounding STRENGTH — how confidently are grounded claims supported)
-      ClaimCoverage = fraction of sentences with best entailment > 0.5
-                      (grounding BREADTH — how many claims are grounded at all)
-      Contradiction = fraction of sentences where the best-matching passage
-                      ALSO contradicts them (intrinsic hallucination signal)
+      Faithfulness / ClaimCoverage — checked against CONCATENATED context
+      -----------------------------------------------------------------------
+      For multi-hop questions a correct answer synthesises facts from several
+      passages; no single passage fully entails the fused claim.  Using the
+      joined context as the premise lets the NLI model see the full evidence
+      chain, matching how most faithfulness metrics work in practice.
+
+      Contradiction — checked against BEST-MATCHING single passage
+      -----------------------------------------------------------------------
+      Contradiction is kept per-passage to avoid false positives: an answer
+      sentence that contradicts one noisy/irrelevant passage but is consistent
+      with the relevant one should NOT be penalised.  We use the passage with
+      the highest entailment for that sentence (the most "relevant" passage)
+      and check whether it also contradicts.
+
+      Faithfulness  = avg entailment of COVERED sentences (strength)
+      ClaimCoverage = fraction of sentences with combined-context entailment > 0.5
+      Contradiction = fraction of sentences contradicted by their best-matching passage
 
     In hallucination_metric_node the Faithfulness term is further multiplied by
     ClaimCoverage before weighting (effective_faithfulness = faithfulness × claim_coverage)
     so that strength and breadth are coupled — high entailment on a single sentence
     cannot carry the composite score when most sentences are unsupported.
-
-    Key design: contradiction uses the SAME best-matching passage, not the worst
-    passage across all. Prevents false positives from irrelevant noisy passages.
     """
     sentences = split_sentences(answer)
 
     if not sentences or not docs:
         return {"faithfulness": 0.0, "claim_coverage": 0.0, "contradiction": 0.0}
+
+    # Pre-compute concatenated context once (used for faithfulness / coverage)
+    combined_context = " ".join(docs)
 
     covered_entailment_scores = []
     covered      = 0
@@ -168,30 +179,33 @@ def compute_h_score(answer: str, docs: List[str]) -> dict:
     logger.debug("[H_score] %d answer sentences × %d passages", len(sentences), len(docs))
 
     for s_idx, sent in enumerate(sentences):
-        ent_per_passage = []
-        con_per_passage = []
+        # ── Faithfulness / Coverage: concatenated context as premise ──────────
+        combined_scores   = nli_score(premise=combined_context, hypothesis=sent)
+        combined_entail   = combined_scores.get("entailment", 0.0)
 
+        # ── Contradiction: best-matching single passage as premise ─────────────
+        con_per_passage   = []
+        ent_per_passage   = []
         for passage in docs:
             scores = nli_score(premise=passage, hypothesis=sent)
             ent_per_passage.append(scores.get("entailment",    0.0))
             con_per_passage.append(scores.get("contradiction", 0.0))
 
         best_idx           = ent_per_passage.index(max(ent_per_passage))
-        best_entailment    = ent_per_passage[best_idx]
-        best_contradiction = con_per_passage[best_idx]  # from same best-matching passage
+        best_contradiction = con_per_passage[best_idx]
 
-        is_covered      = best_entailment    > 0.5
+        is_covered      = combined_entail    > 0.5
         is_contradicted = best_contradiction > 0.5
 
         if is_covered:
             covered += 1
-            covered_entailment_scores.append(best_entailment)
+            covered_entailment_scores.append(combined_entail)
         if is_contradicted:
             contradicted += 1
 
         logger.debug(
-            "  sent[%d] best_entail=%.3f contra_from_best=%.3f -> %s%s",
-            s_idx, best_entailment, best_contradiction,
+            "  sent[%d] combined_entail=%.3f contra_from_best=%.3f -> %s%s",
+            s_idx, combined_entail, best_contradiction,
             "covered" if is_covered else "uncovered",
             " + CONTRADICTED" if is_contradicted else "",
         )

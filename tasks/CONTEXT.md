@@ -19,6 +19,13 @@ Faithfulness (avg entailment of covered sentences) is multiplied by ClaimCoverag
 before weighting so that grounding strength and breadth are inseparable — a single
 well-grounded sentence cannot inflate the score when most sentences are unsupported.
 
+**Split-premise NLI strategy (multi-hop fix):**
+- Faithfulness and ClaimCoverage use the CONCATENATED retrieved passages as the NLI
+  premise. This lets the model verify claims that require synthesising facts across
+  multiple passages (multi-hop), which no single passage fully entails.
+- Contradiction uses the BEST-MATCHING single passage as the premise, to avoid
+  false positives from noisy/irrelevant passages contradicting a correct answer.
+
 NLI: `cross-encoder/nli-deberta-v3-small`
 Embeddings: `BAAI/bge-small-en-v1.5`
 LLM: Groq `llama-3.3-70b-versatile`
